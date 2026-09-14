@@ -20,7 +20,20 @@ PINNED_UPSTREAM_TAG="v2.1.61"
 PINNED_UPSTREAM_COMMIT="0d242f54e420c27fbb2106ab375a874099319671"
 
 HEAD_COMMIT="$(git rev-parse HEAD)"
-UPSTREAM_VERSION="$(node -p "require('./package.json').version")"
+UPSTREAM_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json)"
+NODE_IMAGE="node:$(cat .nvmrc)-bookworm-slim"
+
+# Run a shell snippet with Node/npm: natively when available, otherwise inside
+# the same Node image the Dockerfile uses (keeps the host free of a toolchain).
+node_exec() {
+  if command -v npm >/dev/null 2>&1; then
+    sh -ec "$1"
+  else
+    echo "    (npm not found on host; running in ${NODE_IMAGE})"
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/home \
+      -v "$PWD:/app" -w /app "${NODE_IMAGE}" sh -ec "mkdir -p /tmp/home && $1"
+  fi
+}
 IMAGE="${IMAGE:-gitlab-mcp-holmes}"
 TAG="${TAG:-${UPSTREAM_VERSION}-holmes.$(git rev-parse --short HEAD)}"
 
@@ -40,9 +53,10 @@ fi
 
 if [ "${SKIP_TESTS:-false}" != "true" ]; then
   echo "==> Running policy test suites"
-  npm run build
-  node --import tsx/esm --test --experimental-test-isolation=none test/holmes-write-policy.test.ts
-  node --import tsx/esm --test --experimental-test-isolation=none --test-concurrency=1 test/test-holmes-write-policy.ts
+  node_exec '[ -d node_modules ] || npm ci --ignore-scripts
+    npm run build
+    node --import tsx/esm --test --experimental-test-isolation=none test/holmes-write-policy.test.ts
+    node --import tsx/esm --test --experimental-test-isolation=none --test-concurrency=1 test/test-holmes-write-policy.ts'
 fi
 
 echo "==> Building upstream image from this checkout"
