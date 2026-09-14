@@ -1,0 +1,134 @@
+# Default values for gitlab-mcp-holmes.
+# Layout follows the common gitlab-mcp chart (image / service / gitlab blocks)
+# so existing values files carry over with few edits.
+
+replicaCount: 1
+
+image:
+  # Built and pushed with holmes/build-image.sh. Pin the digest for production.
+  repository: registry.example.com/platform/gitlab-mcp-holmes
+  tag: "2.1.61-holmes.1"
+  # When set, takes precedence over tag: image@sha256:...
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 3002
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+holmes:
+  # The customization. The image already defaults this to true; the chart
+  # sets it explicitly so the effective value is visible in the manifest.
+  writePolicy: true
+
+gitlab:
+  # Self-hosted GitLab API base URL (include /api/v4).
+  apiUrl: "https://gitlab.example.com/api/v4"
+
+  # GitLab token (api scope; Developer role on the target projects).
+  # Either reference an existing Secret (recommended) ...
+  secretName: "gitlab-mcp"
+  secretKey: "personalAccessToken"
+  # ... or let the chart create one from this value (testing only; ends up in
+  # the release manifest / helm history).
+  personalAccessToken: ""
+
+  # readonly | modify | full. The holmes write policy is stricter than any of
+  # these; "modify" additionally strips upstream's delete tools as belt and braces.
+  permissionMode: "modify"
+
+  # Toolsets to load before the policy allowlist prunes them. Pipelines are not
+  # in upstream's default set; keep them for CI/job-log investigation.
+  toolsets: "repositories,branches,merge_requests,projects,search,issues,ci,pipelines,labels,releases,tags,users"
+
+  # Extra regex denylist applied on top of the policy (optional).
+  deniedToolsRegex: ""
+
+  # Restrict to specific projects (comma-separated IDs or paths); empty = any.
+  allowedProjectIds: ""
+
+  # Legacy upstream feature flags (all covered by toolsets above; keep false).
+  useWiki: false
+  useMilestone: false
+  usePipeline: false
+
+  tls:
+    # Set false ONLY as a last resort for self-signed GitLab certificates
+    # (sets NODE_TLS_REJECT_UNAUTHORIZED=0, disabling all TLS verification).
+    # Prefer mounting the CA bundle via caSecretName.
+    rejectUnauthorized: true
+    # Secret holding the CA bundle (mounted read-only, sets GITLAB_CA_CERT_PATH).
+    caSecretName: ""
+    caSecretKey: "ca.crt"
+
+mcp:
+  # Shared secret Holmes presents as "Authorization: Bearer <token>".
+  # It is NOT the GitLab token; the GitLab token never leaves this pod.
+  # Either reference an existing Secret ...
+  authSecretName: ""
+  authSecretKey: "authToken"
+  # ... or let the chart create one from this value (testing only).
+  authToken: ""
+
+  # Public URL clients use to reach /mcp (Host header allowlist for DNS-rebinding
+  # protection). Defaults to the in-cluster Service DNS name.
+  serverUrl: ""
+  # Additional allowed Host values, e.g. an ingress hostname.
+  allowedHosts: []
+
+  maxRequestsPerMinute: 600
+  logLevel: "info"
+  logFormat: "json"
+
+# Extra environment variables appended verbatim to the container.
+extraEnv: []
+#  - name: GITLAB_PROJECT_ID
+#    value: "123"
+
+networkPolicy:
+  enabled: false
+  # Pods allowed to reach this service (typically the Holmes pods).
+  ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: holmes
+      podSelector: {}
+  # Where this service may connect (DNS is always allowed). Empty = unrestricted.
+  egress: []
+  #  - to:
+  #      - ipBlock:
+  #          cidr: 10.0.0.0/8
+  #    ports:
+  #      - port: 443

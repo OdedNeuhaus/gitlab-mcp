@@ -1,0 +1,53 @@
+# HolmesGPT Helm values excerpt: use the restricted GitLab MCP service.
+# Verified against helm/holmes/values.yaml on the robusta-dev/holmesgpt master
+# branch (Sept 2026). Check the key names against the chart version you deploy.
+
+# The chart's built-in GitLab addon runs the UNPATCHED upstream package
+# (`npx -y @zereight/mcp-gitlab@<version>` inside supergateway) and exposes all
+# of its tools. Keep it off; the policy only exists in the custom image.
+mcpAddons:
+  gitlabMcp:
+    enabled: false
+
+# Generic MCP server entry pointing at the Deployment in holmes/helm/gitlab-mcp-holmes.yaml.
+mcp_servers:
+  gitlab_holmes:
+    description: >-
+      GitLab (restricted). Read repositories, commits, merge requests, issues,
+      pipelines and job logs. Can create holmes-* branches, commit to them, and
+      open merge requests for human review. Cannot merge, delete, or touch other branches.
+    config:
+      url: "http://gitlab-mcp-holmes.<mcp-namespace>.svc.cluster.local:3002/mcp"
+      mode: streamable-http
+      headers:
+        # Shared client secret; the GitLab token never leaves the MCP pod.
+        Authorization: "Bearer {{ env.GITLAB_MCP_HOLMES_CLIENT_TOKEN }}"
+      # Read-only credential check at startup.
+      health_check_tool: whoami
+    llm_instructions: |
+      Repository writes are only permitted on branches whose name starts with
+      "holmes-" (case-sensitive), for example holmes-fix-timeout or
+      holmes-INC-1234-retry. Workflow for a proposed change:
+        1. Investigate with the read tools (get_file_contents, search_project_code, list_commits, ...).
+        2. create_branch with branch "holmes-<short-description>" from the repository's default branch.
+        3. push_files (batch) or create_or_update_file to that holmes- branch. Only create/update
+           actions are allowed; deleting or moving files is rejected.
+        4. create_merge_request from the holmes- branch to the default branch, describing the
+           evidence and the proposed change. Do not put GitLab quick actions (lines starting with "/")
+           in the description. A human reviews and merges; never attempt to merge.
+      Any write to main, master, release or feature branches is rejected by the server.
+
+# Make the shared client secret available to the Holmes pod so the header
+# template above can resolve it. Create it with:
+#   kubectl -n <holmes-namespace> create secret generic gitlab-mcp-holmes-client-token --from-literal=token=<MCP_CLIENT_TOKEN>
+# (same value as the Secret in gitlab-mcp-holmes.yaml)
+additionalEnvVars:
+  - name: GITLAB_MCP_HOLMES_CLIENT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: gitlab-mcp-holmes-client-token
+        key: token
+
+# Recommended: do not give Holmes toolsets that can read Kubernetes Secrets or
+# exec into pods in <mcp-namespace>, otherwise it could read the GitLab token
+# and bypass the MCP server. Restrict the Holmes ServiceAccount RBAC accordingly.

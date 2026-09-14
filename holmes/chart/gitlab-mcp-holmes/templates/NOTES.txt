@@ -1,0 +1,23 @@
+{{ include "gitlab-mcp-holmes.fullname" . }} deployed in {{ .Release.Namespace }}.
+
+MCP endpoint (streamable HTTP):  {{ include "gitlab-mcp-holmes.serverUrl" . }}/mcp
+Holmes write policy:             {{ .Values.holmes.writePolicy }}
+GitLab token Secret:             {{ include "gitlab-mcp-holmes.gitlabSecretName" . }} (key {{ .Values.gitlab.secretKey }})
+Client bearer token Secret:      {{ include "gitlab-mcp-holmes.mcpAuthSecretName" . }} (key {{ .Values.mcp.authSecretKey }})
+
+Point HolmesGPT at it (values for the holmes chart):
+
+  mcp_servers:
+    gitlab_holmes:
+      description: "GitLab (restricted): investigate repos, create holmes-* branches, open MRs"
+      config:
+        url: "{{ include "gitlab-mcp-holmes.serverUrl" . }}/mcp"
+        mode: streamable-http
+        headers:
+          Authorization: "Bearer {{ "{{" }} env.GITLAB_MCP_HOLMES_CLIENT_TOKEN {{ "}}" }}"
+        health_check_tool: whoami
+
+and expose the same client token to the Holmes pod as GITLAB_MCP_HOLMES_CLIENT_TOKEN.
+
+Verify:  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "gitlab-mcp-holmes.fullname" . }} | grep holmes-write-policy
+         helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

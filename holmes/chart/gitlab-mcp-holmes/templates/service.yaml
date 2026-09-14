@@ -1,0 +1,16 @@
+# Service to expose GitLab MCP
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitlab-mcp-holmes.fullname" . }}
+  labels:
+    {{- include "gitlab-mcp-holmes.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "gitlab-mcp-holmes.selectorLabels" . | nindent 4 }}

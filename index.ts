@@ -205,6 +205,16 @@ import {
   LIST_MERGE_REQUESTS_ID_USERNAME_PAIRS,
   sanitizeToolArguments,
 } from "./utils/tool-args.js";
+// holmes-write-policy: local customization (see holmes/README.md)
+import {
+  HOLMES_WRITE_POLICY_ENABLED,
+  isHolmesAllowedTool,
+  assertHolmesToolAllowed,
+  assertHolmesCreateBranch,
+  assertHolmesCreateOrUpdateFile,
+  assertHolmesPushFiles,
+  assertHolmesCreateMergeRequest,
+} from "./utils/holmes-write-policy.js";
 import {
   parseSearchReplaceBlocks,
   applySearchReplace,
@@ -754,6 +764,11 @@ function createServer(): McpServer {
     filteredTools = filteredTools.filter(tool => !hiddenToolSet.has(tool.name));
   }
 
+  // holmes-write-policy: expose only allowlisted tools (execution is guarded separately)
+  if (HOLMES_WRITE_POLICY_ENABLED) {
+    filteredTools = filteredTools.filter(tool => isHolmesAllowedTool(tool.name));
+  }
+
   const mcpServer = new McpServer(
     {
       name: SERVER_NAME,
@@ -878,6 +893,8 @@ function createServer(): McpServer {
     };
 
     try {
+      assertHolmesToolAllowed(toolName); // holmes-write-policy
+
       // Handle discover_tools meta-tool directly (needs access to mcpServer and filteredTools)
       if (toolName === "discover_tools") {
         const category = request.params.arguments?.category?.trim()?.toLowerCase();
@@ -940,6 +957,7 @@ function createServer(): McpServer {
           if (!isToolAllowedByPermissionMode(tool.name)) continue;
           if (GITLAB_DENIED_TOOLS_REGEX?.test(tool.name)) continue;
           if (hiddenToolSet.has(tool.name)) continue;
+          if (HOLMES_WRITE_POLICY_ENABLED && !isHolmesAllowedTool(tool.name)) continue; // holmes-write-policy
           newTools.push(tool);
         }
 
@@ -10862,6 +10880,9 @@ async function handleToolCall(params: any) {
       );
     }
 
+    // holmes-write-policy: explicit tool allowlist, enforced at execution time
+    assertHolmesToolAllowed(params.name);
+
     logger.info({ tool: params.name, event: "tool_call_start" }, `tool_call_start: ${params.name}`);
     switch (params.name) {
       case "execute_graphql": {
@@ -10953,6 +10974,7 @@ async function handleToolCall(params: any) {
 
       case "create_branch": {
         const args = CreateBranchSchema.parse(params.arguments);
+        assertHolmesCreateBranch(args); // holmes-write-policy
         let ref = args.ref;
         if (!ref) {
           ref = await getDefaultBranchRef(args.project_id);
@@ -11083,6 +11105,7 @@ async function handleToolCall(params: any) {
 
       case "create_or_update_file": {
         const args = CreateOrUpdateFileSchema.parse(params.arguments);
+        assertHolmesCreateOrUpdateFile(args); // holmes-write-policy
         const result = await createOrUpdateFile(
           args.project_id,
           args.file_path,
@@ -11101,6 +11124,7 @@ async function handleToolCall(params: any) {
 
       case "push_files": {
         const args = PushFilesSchema.parse(params.arguments);
+        assertHolmesPushFiles(args); // holmes-write-policy
         if (
           GITLAB_PERMISSION_MODE === "modify" &&
           fileOperationsIncludeDeleteOrMove(args.files)
@@ -11135,6 +11159,7 @@ async function handleToolCall(params: any) {
 
       case "create_merge_request": {
         const args = CreateMergeRequestSchema.parse(params.arguments);
+        assertHolmesCreateMergeRequest(args); // holmes-write-policy
         const { project_id, ...options } = args;
         const mergeRequest = await createMergeRequest(project_id, options);
         return {
@@ -15811,6 +15836,11 @@ async function runServer() {
 
     logger.info(`Configured GitLab API URLs: ${GITLAB_API_URLS.join(", ")}`);
     logger.info(`Default GitLab API URL: ${GITLAB_API_URL}`);
+    if (HOLMES_WRITE_POLICY_ENABLED) {
+      logger.info(
+        "holmes-write-policy: enabled (allowlisted tools only; repository writes restricted to holmes-* branches)"
+      );
+    }
 
     if (GITLAB_ALLOWED_GROUPS_RAW) {
       if (GITLAB_OAUTH_ALLOWED_GROUPS_RAW) {

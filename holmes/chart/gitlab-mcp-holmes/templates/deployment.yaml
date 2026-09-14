@@ -1,0 +1,153 @@
+# Deployment for the HolmesGPT-restricted GitLab MCP server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gitlab-mcp-holmes.fullname" . }}
+  labels:
+    {{- include "gitlab-mcp-holmes.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "gitlab-mcp-holmes.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when chart-managed secrets change.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "gitlab-mcp-holmes.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "gitlab-mcp-holmes.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 3002
+              name: http
+          env:
+            # --- HolmesGPT write policy (the customization) ---
+            - name: HOLMES_WRITE_POLICY
+              value: {{ .Values.holmes.writePolicy | quote }}
+            # --- GitLab ---
+            - name: GITLAB_API_URL
+              value: {{ .Values.gitlab.apiUrl | quote }}
+            - name: GITLAB_PERSONAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gitlab-mcp-holmes.gitlabSecretName" . }}
+                  key: {{ .Values.gitlab.secretKey }}
+            - name: GITLAB_PERMISSION_MODE
+              value: {{ .Values.gitlab.permissionMode | quote }}
+            - name: GITLAB_TOOLSETS
+              value: {{ .Values.gitlab.toolsets | quote }}
+            {{- if .Values.gitlab.deniedToolsRegex }}
+            - name: GITLAB_DENIED_TOOLS_REGEX
+              value: {{ .Values.gitlab.deniedToolsRegex | quote }}
+            {{- end }}
+            {{- if .Values.gitlab.allowedProjectIds }}
+            - name: GITLAB_ALLOWED_PROJECT_IDS
+              value: {{ .Values.gitlab.allowedProjectIds | quote }}
+            {{- end }}
+            - name: USE_GITLAB_WIKI
+              value: {{ .Values.gitlab.useWiki | quote }}
+            - name: USE_MILESTONE
+              value: {{ .Values.gitlab.useMilestone | quote }}
+            - name: USE_PIPELINE
+              value: {{ .Values.gitlab.usePipeline | quote }}
+            {{- if not .Values.gitlab.tls.rejectUnauthorized }}
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+            {{- end }}
+            {{- if .Values.gitlab.tls.caSecretName }}
+            - name: GITLAB_CA_CERT_PATH
+              value: /etc/gitlab-ca/{{ .Values.gitlab.tls.caSecretKey }}
+            {{- end }}
+            # --- MCP transport (streamable HTTP, client bearer token) ---
+            - name: STREAMABLE_HTTP
+              value: "true"
+            - name: SSE
+              value: "false"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "3002"
+            - name: STREAMABLE_HTTP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gitlab-mcp-holmes.mcpAuthSecretName" . }}
+                  key: {{ .Values.mcp.authSecretKey }}
+            - name: MCP_SERVER_URL
+              value: {{ include "gitlab-mcp-holmes.serverUrl" . | quote }}
+            {{- with .Values.mcp.allowedHosts }}
+            - name: MCP_ALLOWED_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: MAX_REQUESTS_PER_MINUTE
+              value: {{ .Values.mcp.maxRequestsPerMinute | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.mcp.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.mcp.logFormat | quote }}
+            - name: GITLAB_DISABLE_VERSION_CHECK
+              value: "true"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.gitlab.tls.caSecretName }}
+            - name: gitlab-ca
+              mountPath: /etc/gitlab-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.gitlab.tls.caSecretName }}
+        - name: gitlab-ca
+          secret:
+            secretName: {{ .Values.gitlab.tls.caSecretName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
