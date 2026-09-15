@@ -94,10 +94,10 @@ spec:
                   key: {{ .Values.mcp.authSecretKey }}
             - name: MCP_SERVER_URL
               value: {{ include "gitlab-mcp-holmes.serverUrl" . | quote }}
-            {{- with .Values.mcp.allowedHosts }}
+            # Upstream rejects (403) any Host header not listed here; cover all
+            # in-cluster DNS forms of the Service plus mcp.allowedHosts.
             - name: MCP_ALLOWED_HOSTS
-              value: {{ join "," . | quote }}
-            {{- end }}
+              value: {{ include "gitlab-mcp-holmes.allowedHosts" . | quote }}
             - name: MAX_REQUESTS_PER_MINUTE
               value: {{ .Values.mcp.maxRequestsPerMinute | quote }}
             - name: LOG_LEVEL

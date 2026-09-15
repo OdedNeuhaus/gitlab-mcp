@@ -105,7 +105,8 @@ mcp:
   # Public URL clients use to reach /mcp (Host header allowlist for DNS-rebinding
   # protection). Defaults to the in-cluster Service DNS name.
   serverUrl: ""
-  # Additional allowed Host values, e.g. an ingress hostname.
+  # Additional allowed Host values (host:port), e.g. an ingress hostname.
+  # All in-cluster DNS forms of the Service are always allowed.
   allowedHosts: []
 
   maxRequestsPerMinute: 600

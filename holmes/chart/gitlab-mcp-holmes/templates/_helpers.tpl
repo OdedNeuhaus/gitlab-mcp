@@ -82,3 +82,20 @@ In-cluster URL clients use; also the DNS-rebinding Host allowlist entry.
 {{- printf "http://%s.%s.svc.cluster.local:%v" (include "gitlab-mcp-holmes.fullname" .) .Release.Namespace .Values.service.port }}
 {{- end }}
 {{- end }}
+
+{{/*
+Every host:port form under which the in-cluster Service can be addressed, plus
+user-supplied extras. Upstream returns 403 for any Host header not listed here.
+*/}}
+{{- define "gitlab-mcp-holmes.allowedHosts" -}}
+{{- $name := include "gitlab-mcp-holmes.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $port := .Values.service.port -}}
+{{- $hosts := list
+      (printf "%s:%v" $name $port)
+      (printf "%s.%s:%v" $name $ns $port)
+      (printf "%s.%s.svc:%v" $name $ns $port)
+      (printf "%s.%s.svc.cluster.local:%v" $name $ns $port) -}}
+{{- $hosts = concat $hosts .Values.mcp.allowedHosts -}}
+{{- join "," $hosts -}}
+{{- end }}

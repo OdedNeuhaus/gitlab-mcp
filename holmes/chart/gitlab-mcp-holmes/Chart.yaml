@@ -3,7 +3,7 @@ name: gitlab-mcp-holmes
 description: zereight/gitlab-mcp with the HolmesGPT holmes-* branch write policy (see holmes/README.md)
 type: application
 # Chart version; bump on any template/values change.
-version: 0.1.0
+version: 0.1.1
 # Upstream gitlab-mcp version the image is built from.
 appVersion: "2.1.61"
 keywords:
