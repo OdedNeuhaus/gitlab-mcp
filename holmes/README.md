@@ -37,6 +37,24 @@ default-branch, project settings, pipeline/deployment/environment mutations, web
 issue/note writes are all off the list. Upstream `force`/`start_branch`/`start_sha` commit options are never sent by the
 enabled code paths.
 
+### Keeping the agent from burning turns
+
+Enforcement alone makes an agent discover the rules by failing, which costs several turns per proposal.
+Three things make the policy self-explanatory:
+
+* **The rule is in the tool description.** `create_branch`, `push_files`, `create_or_update_file` and
+  `create_merge_request` carry a `POLICY:` paragraph and the branch/commit/MR workflow, so the agent never has to
+  attempt a default-branch write to learn that it is refused. Read tools keep their upstream descriptions.
+* **Errors say what to do next.** A rejected branch names the remedy (`create_branch` with
+  `holmes-<short-description>` and `ref` set to the branch that was refused) and states that retrying the same branch
+  will not work. The `previous_path` error says to omit the field rather than only that it is refused.
+* **Blank optional arguments are treated as absent.** Agents send `null` or `""` to mean "not using this field".
+  Those are stripped before validation for `previous_path`, per-file `action`/`encoding`, `description`, and the
+  `assignee_ids` / `reviewer_ids` / `labels` arrays (upstream's sanitizer does not recurse into arrays, so a nested
+  `null` otherwise surfaced as `Expected string, received null`, and `[null]` reached GitLab as `[0]` and returned 400).
+  Normalization only removes "no value" markers; it never invents or rewrites a value, and a real `previous_path` is
+  still rejected.
+
 ### Not covered (by design)
 
 * The GitLab token's own permissions are unchanged. If the token can push to `main`, only this server stands in the way.
@@ -127,16 +145,18 @@ node --import tsx/esm --test --experimental-test-isolation=none test/holmes-writ
 node --import tsx/esm --test --experimental-test-isolation=none --test-concurrency=1 test/test-holmes-write-policy.ts
 ```
 
-* `test/holmes-write-policy.test.ts` (unit, 26 tests): branch validation matrix (`main`, `master`, `release/*`,
+* `test/holmes-write-policy.test.ts` (unit, 37 tests): branch validation matrix (`main`, `master`, `release/*`,
   `feature/holmes-fix`, `Holmes-fix`, missing/empty/null, malformed refs), quick-action detection, commit-action checks, and
   allowlist invariants against upstream's registry (every listed tool exists; every read tool is in upstream's
   `readOnlyTools`; no delete tools; bypass tools rejected). These invariants are what catch upstream renames on upgrade.
-* `test/test-holmes-write-policy.ts` (end to end, 14 tests): spawns the built server against the repo's mock GitLab and
+* `test/test-holmes-write-policy.ts` (end to end, 18 tests): spawns the built server against the repo's mock GitLab and
   asserts, with request counters, that `holmes-fix-timeout` can be created from `main`, committed to (new and pre-existing
   `holmes-*` branches, single and batch), and proposed as an MR to `main`; that reads from `main` work; that every write
   tool rejects forbidden branches **before any request reaches GitLab**; that embedded delete/move/quick-action/
   `remove_source_branch` are rejected; that disabled tools fail via direct calls and via `discover_tools`; and that with the
-  flag unset upstream behaviour is unchanged.
+  flag unset upstream behaviour is unchanged. It also covers the agent-efficiency behaviour above: the policy text
+  appears in the write tools' descriptions, blank optional arguments are accepted, and merge request arrays never reach
+  GitLab as nulls.
 
 Both files are picked up by upstream's `scripts/run-mock-tests.sh`, so `npm run test:mock` runs them too.
 

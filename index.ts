@@ -214,6 +214,8 @@ import {
   assertHolmesCreateOrUpdateFile,
   assertHolmesPushFiles,
   assertHolmesCreateMergeRequest,
+  normalizeHolmesWriteArgumentsIfEnabled,
+  describeHolmesTool,
 } from "./utils/holmes-write-policy.js";
 import {
   parseSearchReplaceBlocks,
@@ -830,6 +832,10 @@ function createServer(): McpServer {
           delete modified.inputSchema.$schema;
         }
       }
+
+      // holmes-write-policy: state the branch rule in the description so the
+      // agent does not have to discover it by failing a default-branch write
+      modified.description = describeHolmesTool(tool.name, modified.description);
 
       // Add MCP tool annotations
       modified.annotations = {
@@ -10973,6 +10979,7 @@ async function handleToolCall(params: any) {
       }
 
       case "create_branch": {
+        normalizeHolmesWriteArgumentsIfEnabled("create_branch", params.arguments); // holmes-write-policy
         const args = CreateBranchSchema.parse(params.arguments);
         assertHolmesCreateBranch(args); // holmes-write-policy
         let ref = args.ref;
@@ -11104,6 +11111,7 @@ async function handleToolCall(params: any) {
       }
 
       case "create_or_update_file": {
+        normalizeHolmesWriteArgumentsIfEnabled("create_or_update_file", params.arguments); // holmes-write-policy
         const args = CreateOrUpdateFileSchema.parse(params.arguments);
         assertHolmesCreateOrUpdateFile(args); // holmes-write-policy
         const result = await createOrUpdateFile(
@@ -11123,6 +11131,7 @@ async function handleToolCall(params: any) {
       }
 
       case "push_files": {
+        normalizeHolmesWriteArgumentsIfEnabled("push_files", params.arguments); // holmes-write-policy
         const args = PushFilesSchema.parse(params.arguments);
         assertHolmesPushFiles(args); // holmes-write-policy
         if (
@@ -11158,6 +11167,7 @@ async function handleToolCall(params: any) {
       }
 
       case "create_merge_request": {
+        normalizeHolmesWriteArgumentsIfEnabled("create_merge_request", params.arguments); // holmes-write-policy
         const args = CreateMergeRequestSchema.parse(params.arguments);
         assertHolmesCreateMergeRequest(args); // holmes-write-policy
         const { project_id, ...options } = args;

@@ -577,6 +577,113 @@ describe("Holmes write policy", { concurrency: 1 }, () => {
       });
     });
 
+    test("write tools advertise the branch rule in their description", async () => {
+      // Without this the agent discovers the rule by failing a default-branch
+      // write first, which costs several turns.
+      const tools = await withClient(server, async c => (await c.listTools()).tools);
+      const byName = new Map(tools.map(t => [t.name, t.description ?? ""]));
+      for (const name of [
+        "create_branch",
+        "push_files",
+        "create_or_update_file",
+        "create_merge_request",
+      ]) {
+        assert.match(
+          byName.get(name) ?? "",
+          /holmes-/,
+          `${name} description should state the prefix`
+        );
+      }
+      assert.match(byName.get("push_files") ?? "", /previous_path/);
+      assert.match(byName.get("create_or_update_file") ?? "", /Omit "previous_path"/);
+      assert.match(byName.get("create_merge_request") ?? "", /quick actions/);
+      // Read tools keep their upstream description.
+      assert.doesNotMatch(byName.get("get_file_contents") ?? "", /POLICY:/);
+    });
+
+    test("blank optional arguments are accepted instead of costing a retry", async () => {
+      hits = [];
+      await withClient(server, async c => {
+        // previous_path: "" means "not renaming", not "rename to nothing".
+        const emptyString = await c.callTool("create_or_update_file", {
+          project_id: PROJECT,
+          file_path: "README.md",
+          content: "updated",
+          commit_message: "Update",
+          branch: "holmes-fix-timeout",
+          previous_path: "",
+        });
+        assert.ok(!emptyString.isError, resultText(emptyString));
+
+        // null inside a batch entry: upstream's sanitizer does not recurse here.
+        const nestedNull = await c.callTool("push_files", {
+          project_id: PROJECT,
+          branch: "holmes-fix-timeout",
+          commit_message: "Update",
+          files: [
+            { file_path: "main.py", content: "sleep(10)", previous_path: null, action: null },
+          ],
+        });
+        assert.ok(!nestedNull.isError, resultText(nestedNull));
+      });
+      const commit = mutations().find(h => h.path === COMMITS_PATH);
+      assert.ok(commit, "the batch commit should have reached GitLab");
+      const actions = commit?.body.actions as Record<string, unknown>[];
+      assert.equal(actions[0]?.action, "create");
+      assert.equal("previous_path" in (actions[0] ?? {}), false);
+    });
+
+    test("empty and null merge request arrays do not reach GitLab as nulls", async () => {
+      hits = [];
+      const result = await withClient(server, c =>
+        c.callTool("create_merge_request", {
+          project_id: PROJECT,
+          title: "Change sleep time",
+          source_branch: "holmes-fix-timeout",
+          target_branch: "main",
+          assignee_ids: [null],
+          reviewer_ids: null,
+          labels: [],
+          description: "",
+        })
+      );
+      assert.ok(!result.isError, resultText(result));
+      const [hit] = mutations();
+      assert.strictEqual(hit?.path, MR_PATH);
+      for (const key of ["assignee_ids", "reviewer_ids", "labels"]) {
+        assert.strictEqual(hit?.body[key], undefined, `${key} must be omitted, not sent as null`);
+      }
+    });
+
+    test("rejections tell the agent what to do next", async () => {
+      await withClient(server, async c => {
+        await expectRejected(
+          c,
+          "push_files",
+          {
+            project_id: PROJECT,
+            branch: "master",
+            commit_message: "x",
+            files: [{ file_path: "main.py", content: "x" }],
+          },
+          /Call create_branch with branch "holmes-<short-description>" and ref "master"/
+        );
+        await expectRejected(
+          c,
+          "create_or_update_file",
+          {
+            project_id: PROJECT,
+            file_path: "main.py",
+            content: "x",
+            commit_message: "x",
+            branch: "holmes-fix-timeout",
+            previous_path: "main.py",
+          },
+          /Omit previous_path entirely/
+        );
+      });
+    });
+
     test("disabled tools cannot execute through direct calls", async () => {
       await withClient(server, async c => {
         await expectRejected(

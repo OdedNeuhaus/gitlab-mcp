@@ -155,14 +155,19 @@ export function isValidGitBranchName(name: string): boolean {
  * Never falls back to a default branch: a missing value is an error.
  */
 export function validateHolmesBranch(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(
-      `${field} is required: Holmes may only write to branches whose name starts with "${HOLMES_BRANCH_PREFIX}"`
+      `${field} is required and must name a branch starting with "${HOLMES_BRANCH_PREFIX}" ` +
+        `(for example "${HOLMES_BRANCH_PREFIX}fix-timeout"). There is no default: the request is not ` +
+        `retried against the default branch.`
     );
   }
   if (!value.startsWith(HOLMES_BRANCH_PREFIX)) {
     throw new Error(
-      `${field} "${value}" is not allowed: Holmes may only write to branches whose name starts with "${HOLMES_BRANCH_PREFIX}" (case-sensitive)`
+      `${field} "${value}" is not allowed: Holmes may only write to branches whose name starts with ` +
+        `"${HOLMES_BRANCH_PREFIX}" (case-sensitive). Call create_branch with branch ` +
+        `"${HOLMES_BRANCH_PREFIX}<short-description>" and ref "${value}", then retry this call against ` +
+        `that branch. Do not retry against "${value}".`
     );
   }
   if (value.length === HOLMES_BRANCH_PREFIX.length || !isValidGitBranchName(value)) {
@@ -194,19 +199,36 @@ export function validateNoQuickActions(text: string | null | undefined, field: s
 
 type CommitFileLike = { action?: string; previous_path?: string };
 
+/**
+ * Agents routinely send null / "" / "  " to mean "I am not using this optional
+ * field". Treat those as absent everywhere instead of rejecting them: a blank
+ * previous_path is not a rename, so refusing it sends the model hunting for a
+ * value that does not exist.
+ */
+export function isBlankArgument(value: unknown): boolean {
+  return (
+    value === null || value === undefined || (typeof value === "string" && value.trim() === "")
+  );
+}
+
+/** Wording matters: say what to send instead, not only what is refused. */
+const PREVIOUS_PATH_ERROR =
+  "previous_path is not supported by the Holmes write policy (renames and moves are disabled). " +
+  "Omit previous_path entirely — updating or creating a file in place does not need it.";
+
 /** Only create/update commit actions are allowed; delete and move are rejected. */
 export function validateHolmesCommitActions(files: ReadonlyArray<CommitFileLike>): void {
   for (const file of files) {
-    const action = file.action ?? "create";
+    const action = isBlankArgument(file.action) ? "create" : file.action;
     if (action !== "create" && action !== "update") {
       throw new Error(
-        `push_files action "${action}" is not allowed by the Holmes write policy (only create and update)`
+        `push_files action "${action}" is not allowed by the Holmes write policy. ` +
+          `Use action "create" for a new file or "update" for an existing one; ` +
+          `"delete" and "move" are disabled.`
       );
     }
-    if (file.previous_path !== undefined) {
-      throw new Error(
-        "push_files previous_path is not allowed by the Holmes write policy (file moves are disabled)"
-      );
+    if (!isBlankArgument(file.previous_path)) {
+      throw new Error(`push_files: ${PREVIOUS_PATH_ERROR}`);
     }
   }
 }
@@ -220,10 +242,8 @@ export function validateHolmesCreateOrUpdateFile(args: {
   previous_path?: string;
 }): void {
   validateHolmesBranch(args.branch, "branch");
-  if (args.previous_path !== undefined) {
-    throw new Error(
-      "create_or_update_file previous_path is not allowed by the Holmes write policy (file moves are disabled)"
-    );
+  if (!isBlankArgument(args.previous_path)) {
+    throw new Error(`create_or_update_file: ${PREVIOUS_PATH_ERROR}`);
   }
 }
 
@@ -284,4 +304,118 @@ export function assertHolmesCreateMergeRequest(args: {
   remove_source_branch?: boolean | null;
 }): void {
   if (HOLMES_WRITE_POLICY_ENABLED) validateHolmesCreateMergeRequest(args);
+}
+
+// ---------------------------------------------------------------------------
+// Argument hygiene
+//
+// Upstream's sanitizeToolArguments drops top-level null/undefined but does not
+// recurse, so nulls inside push_files[].files and create_merge_request's id
+// arrays reach Zod and fail with type errors the model cannot act on
+// ("Expected string, received null"). Normalizing blanks away before parsing
+// turns several wasted turns into none. Only runs when the policy is enabled,
+// so upstream behaviour is untouched.
+// ---------------------------------------------------------------------------
+
+/** Optional fields the model may blank out rather than omit. */
+const BLANKABLE_TOP_LEVEL: Readonly<Record<string, readonly string[]>> = {
+  create_or_update_file: ["previous_path", "last_commit_id", "commit_id", "encoding"],
+  create_merge_request: ["description", "target_project_id"],
+  create_branch: ["ref"],
+};
+
+/** Array fields GitLab rejects with 400 when they contain null or empty entries. */
+const BLANKABLE_ARRAYS: Readonly<Record<string, readonly string[]>> = {
+  create_merge_request: ["assignee_ids", "reviewer_ids", "labels"],
+};
+
+/** Per-file optional fields inside a push_files batch. */
+const BLANKABLE_FILE_FIELDS = ["previous_path", "action", "encoding", "last_commit_id"] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Drop blank optional arguments in place, before Zod validation.
+ * Never adds or rewrites a meaningful value — it only removes "no value" markers.
+ */
+export function normalizeHolmesWriteArguments(toolName: string, args: unknown): void {
+  if (!isPlainObject(args)) return;
+
+  for (const key of BLANKABLE_TOP_LEVEL[toolName] ?? []) {
+    if (isBlankArgument(args[key])) delete args[key];
+  }
+
+  for (const key of BLANKABLE_ARRAYS[toolName] ?? []) {
+    const value = args[key];
+    if (Array.isArray(value)) {
+      const cleaned = value.filter(entry => !isBlankArgument(entry));
+      if (cleaned.length === 0) delete args[key];
+      else args[key] = cleaned;
+    } else if (isBlankArgument(value)) {
+      delete args[key];
+    }
+  }
+
+  if (toolName === "push_files" && Array.isArray(args.files)) {
+    for (const file of args.files) {
+      if (!isPlainObject(file)) continue;
+      for (const key of BLANKABLE_FILE_FIELDS) {
+        if (isBlankArgument(file[key])) delete file[key];
+      }
+    }
+  }
+}
+
+/** No-op unless the policy is enabled (keeps upstream behaviour identical). */
+export function normalizeHolmesWriteArgumentsIfEnabled(toolName: string, args: unknown): void {
+  if (HOLMES_WRITE_POLICY_ENABLED) normalizeHolmesWriteArguments(toolName, args);
+}
+
+// ---------------------------------------------------------------------------
+// Tool descriptions
+//
+// The constraint has to be visible BEFORE the first call. Without it the agent
+// attempts a default-branch write, reads the rejection, and reverse-engineers
+// the rule over several turns.
+// ---------------------------------------------------------------------------
+
+const WORKFLOW_HINT =
+  `Proposal workflow: create_branch ("${HOLMES_BRANCH_PREFIX}<short-description>", ref = the default branch) ` +
+  `-> push_files or create_or_update_file on that branch -> create_merge_request from it. ` +
+  `A human reviews and merges; merging, deleting and force-pushing are unavailable.`;
+
+const TOOL_POLICY_HINTS: Readonly<Record<string, string>> = {
+  create_branch:
+    `POLICY: the new branch name must start with "${HOLMES_BRANCH_PREFIX}" (literal, case-sensitive), ` +
+    `e.g. "${HOLMES_BRANCH_PREFIX}fix-timeout". "ref" may be any existing branch, such as main or master. ` +
+    WORKFLOW_HINT,
+  push_files:
+    `POLICY: "branch" must start with "${HOLMES_BRANCH_PREFIX}" (literal, case-sensitive); writes to main, ` +
+    `master, release or feature branches are refused. Per-file "action" may only be "create" or "update", ` +
+    `and "previous_path" must be omitted (renames and moves are disabled). ` +
+    WORKFLOW_HINT,
+  create_or_update_file:
+    `POLICY: "branch" must start with "${HOLMES_BRANCH_PREFIX}" (literal, case-sensitive); writes to main, ` +
+    `master, release or feature branches are refused. Omit "previous_path" — it is only for renames, which ` +
+    `are disabled, and creating versus updating is detected automatically. ` +
+    WORKFLOW_HINT,
+  create_merge_request:
+    `POLICY: "source_branch" must start with "${HOLMES_BRANCH_PREFIX}" (literal, case-sensitive); ` +
+    `"target_branch" may be main, master or any other branch. Do not put GitLab quick actions (lines ` +
+    `starting with "/") in the description, and do not set remove_source_branch. Opening the merge request ` +
+    `never merges it. ` +
+    WORKFLOW_HINT,
+};
+
+/** Returns the description with the policy appended, or the original when nothing applies. */
+export function describeHolmesTool(
+  toolName: string,
+  description: string | undefined
+): string | undefined {
+  if (!HOLMES_WRITE_POLICY_ENABLED) return description;
+  const hint = TOOL_POLICY_HINTS[toolName];
+  if (!hint) return description;
+  return description ? `${description}\n\n${hint}` : hint;
 }

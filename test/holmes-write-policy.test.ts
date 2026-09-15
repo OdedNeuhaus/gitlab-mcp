@@ -6,6 +6,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  describeHolmesTool,
+  isBlankArgument,
+  normalizeHolmesWriteArguments,
   HOLMES_BRANCH_PREFIX,
   HOLMES_READ_TOOLS,
   HOLMES_WRITE_TOOLS,
@@ -178,6 +181,114 @@ describe("Holmes write policy: commit actions", () => {
       () => validateHolmesCommitActions([{ action: "update", previous_path: "old.txt" }]),
       /previous_path/
     );
+  });
+
+  it("treats a blank previous_path as absent rather than a rename", () => {
+    // Agents send null / "" to mean "not using this optional field". Rejecting
+    // those sends the model hunting for a value that does not exist.
+    validateHolmesCommitActions([{ action: "update", previous_path: "" }]);
+    validateHolmesCommitActions([{ action: "update", previous_path: "   " }]);
+    validateHolmesCommitActions([
+      { action: "update", previous_path: undefined as unknown as string },
+    ]);
+  });
+
+  it("treats a blank action as create", () => {
+    validateHolmesCommitActions([{ action: "" }]);
+  });
+
+  it("says how to proceed, not only what is refused", () => {
+    assert.throws(
+      () => validateHolmesCommitActions([{ action: "update", previous_path: "old.txt" }]),
+      /Omit previous_path entirely/
+    );
+    assert.throws(
+      () => validateHolmesCommitActions([{ action: "delete" }]),
+      /Use action "create" for a new file or "update" for an existing one/
+    );
+  });
+});
+
+describe("Holmes write policy: blank arguments", () => {
+  it('recognises the values agents use for "no value"', () => {
+    for (const value of [null, undefined, "", "   ", "\t"]) {
+      assert.equal(isBlankArgument(value), true, JSON.stringify(value));
+    }
+    for (const value of ["main.py", 0, false, []]) {
+      assert.equal(isBlankArgument(value), false, JSON.stringify(value));
+    }
+  });
+
+  it("drops a blank previous_path from create_or_update_file", () => {
+    for (const blank of [null, "", "  "]) {
+      const args: Record<string, unknown> = { branch: "holmes-x", previous_path: blank };
+      normalizeHolmesWriteArguments("create_or_update_file", args);
+      assert.equal("previous_path" in args, false, JSON.stringify(blank));
+    }
+  });
+
+  it("keeps a real previous_path so the policy can still reject it", () => {
+    const args: Record<string, unknown> = { branch: "holmes-x", previous_path: "old.md" };
+    normalizeHolmesWriteArguments("create_or_update_file", args);
+    assert.equal(args.previous_path, "old.md");
+    assert.throws(() => validateHolmesCreateOrUpdateFile(args), /previous_path/);
+  });
+
+  it("drops blank per-file fields inside a push_files batch", () => {
+    // Upstream's sanitizer does not recurse, so these nulls would otherwise
+    // reach Zod as "Expected string, received null".
+    const args: Record<string, unknown> = {
+      branch: "holmes-x",
+      files: [
+        { file_path: "a.txt", content: "a", previous_path: null, action: null, encoding: "" },
+        { file_path: "b.txt", content: "b", previous_path: "" },
+      ],
+    };
+    normalizeHolmesWriteArguments("push_files", args);
+    for (const file of args.files as Record<string, unknown>[]) {
+      assert.equal("previous_path" in file, false);
+      assert.equal("action" in file, false);
+      assert.equal("encoding" in file, false);
+    }
+  });
+
+  it("drops null and empty entries from create_merge_request arrays", () => {
+    const args: Record<string, unknown> = {
+      source_branch: "holmes-x",
+      assignee_ids: [null],
+      reviewer_ids: null,
+      labels: ["", null, "bug"],
+      description: "",
+    };
+    normalizeHolmesWriteArguments("create_merge_request", args);
+    assert.equal("assignee_ids" in args, false);
+    assert.equal("reviewer_ids" in args, false);
+    assert.deepEqual(args.labels, ["bug"]);
+    assert.equal("description" in args, false);
+  });
+
+  it("leaves untouched anything it does not know about", () => {
+    const args: Record<string, unknown> = { branch: "holmes-x", title: "", files: "not-an-array" };
+    normalizeHolmesWriteArguments("push_files", args);
+    assert.equal(args.title, "");
+    assert.equal(args.files, "not-an-array");
+    normalizeHolmesWriteArguments("unknown_tool", args);
+    assert.equal(args.branch, "holmes-x");
+  });
+
+  it("tolerates non-object arguments", () => {
+    normalizeHolmesWriteArguments("push_files", null);
+    normalizeHolmesWriteArguments("push_files", undefined);
+    normalizeHolmesWriteArguments("push_files", [1, 2, 3]);
+  });
+});
+
+describe("Holmes write policy: tool descriptions", () => {
+  it("is a no-op while the policy is disabled (upstream descriptions unchanged)", () => {
+    // This suite runs without HOLMES_WRITE_POLICY; the enabled case is covered
+    // end to end in test-holmes-write-policy.ts.
+    assert.equal(describeHolmesTool("create_branch", "upstream text"), "upstream text");
+    assert.equal(describeHolmesTool("list_issues", "upstream text"), "upstream text");
   });
 });
 
